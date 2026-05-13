@@ -1,1 +1,27 @@
-Nothing should be ignored based on the provided file changes. The only modified file is 'tibfix.py', which is a source code file and should not be added to .gitignore.
+```
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Test files
+test_*.txt
+test_*.pdf
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+.env.*
+
+# Editors
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+```

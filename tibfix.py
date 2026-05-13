@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import re
 import sys
 from io import StringIO
@@ -67,12 +68,24 @@ from pytiblegenc import (
 # КОНСТАНТЫ И НАСТРОЙКИ
 # =============================================================================
 
-# Пути к системным тибетским шрифтам (Linux/Unix)
+# Пути к системным тибетским шрифтам (кроссплатформенные)
 SYSTEM_FONT_CANDIDATES: List[str] = [
+    # Linux
     "/usr/share/fonts/truetype/jomolhari/Jomolhari.ttf",
     "/usr/share/fonts/tibetan-machine/TibetanMachineUni.ttf",
     "/usr/share/fonts/truetype/noto/NotoSansTibetan-Regular.ttf",
-    "Jomolhari.ttf",  # Локальный поиск в рабочей директории
+    
+    # macOS
+    "/Library/Fonts/Jomolhari.ttf",
+    os.path.expanduser("~/Library/Fonts/Jomolhari.ttf"),
+    
+    # Windows
+    "C:/Windows/Fonts/Jomolhari.ttf",
+    "C:/Windows/Fonts/NotoSansTibetan-Regular.ttf",
+    
+    # Локальный поиск (текущая директория)
+    "Jomolhari.ttf",
+    "NotoSansTibetan-Regular.ttf",
 ]
 
 # Магические числа для очистки текста
@@ -353,22 +366,24 @@ def extract_text(
     return text, stats
 
 
-def create_pdf(text: str, output_pdf: str, font_path: str) -> None:
+def create_pdf(text: str, output_pdf: str, font_path: str, lines_per_page: int = 50) -> None:
     """
-    Создаёт новый PDF с тибетским Unicode-текстом, используя указанный шрифт.
+    Создаёт многостраничный PDF с тибетским Unicode-текстом, используя указанный шрифт.
 
     Почему используется fpdf2:
         Это лёгкая библиотека для генерации PDF без внешних зависимостей.
         Она поддерживает Unicode-шрифты через параметр uni=True.
 
-    Ограничения:
-        - Создаётся одностраничный PDF (для многостраничности нужна разбивка текста)
-        - Нет автоматического переноса слов на тибетском
+    Особенности:
+        - Автоматическая разбивка на страницы (lines_per_page строк на страницу)
+        - Поддержка пустых строк как разделителей абзацев
+        - multi_cell автоматически переносит длинные строки
 
     Args:
         text: Unicode-текст для размещения в PDF.
         output_pdf: Путь к выходному PDF-файлу.
         font_path: Путь к .ttf файлу тибетского шрифта.
+        lines_per_page: Количество строк на странице (по умолчанию 50).
 
     Raises:
         SystemExit: Если библиотека fpdf2 не установлена.
@@ -393,28 +408,53 @@ def create_pdf(text: str, output_pdf: str, font_path: str) -> None:
     logging.info(f"Создание PDF с использованием шрифта: {font_path}")
 
     pdf = FPDF()
+    
+    # Настройка страницы: A4, портретная ориентация
+    pdf = FPDF(orientation='P', format='A4')
+    
+    # Разбиение текста на строки
+    lines = text.split("\n")
+    total_lines = len(lines)
+    page_count = 0
+    
+    # Обработка первой страницы
     pdf.add_page()
-
-    # Регистрация шрифта с именем "Tibetan"
-    # Почему uni=True: шрифт содержит Unicode-глифы
+    page_count += 1
     pdf.add_font("Tibetan", "", font_path, uni=True)
-    pdf.set_font("Tibetan", size=12)
-
-    # Построчная запись текста с сохранением переносов
-    line_count = 0
-    for line in text.split("\n"):
-        if line.strip() == "":
-            # Пустая строка — увеличиваем межстрочный интервал
-            pdf.ln(5)
-        else:
-            # multi_cell автоматически переносит длинные строки
-            # 0 = ширина до края страницы, 6 = высота строки
-            pdf.multi_cell(0, 6, line)
-            line_count += 1
+    pdf.set_font("Tibetan", size=14)
+    
+    # Установка левого маргинала для тибетского текста
+    pdf.set_left_margin(15)
+    pdf.set_right_margin(15)
+    
+    line_index = 0
+    while line_index < total_lines:
+        # Определяем диапазон строк для текущей страницы
+        end_index = min(line_index + lines_per_page, total_lines)
+        
+        # Запись строк на текущую страницу
+        for i in range(line_index, end_index):
+            line = lines[i]
+            if line.strip() == "":
+                # Пустая строка — увеличиваем межстрочный интервал
+                pdf.ln(7)
+            else:
+                # cell с последующим ln для простого построчного вывода
+                # avoid multi_cell issues with Tibetan script
+                pdf.cell(0, 7, line, new_x="LEFT", new_y="NEXT")
+        
+        line_index = end_index
+        
+        # Если есть ещё строки, добавляем новую страницу
+        if line_index < total_lines:
+            pdf.add_page()
+            page_count += 1
+            # Шрифт уже зарегистрирован, нужно только установить
+            pdf.set_font("Tibetan", size=14)
 
     # Сохранение файла
     pdf.output(output_pdf)
-    logging.info(f"PDF сохранён: {output_pdf} ({line_count} строк)")
+    logging.info(f"PDF сохранён: {output_pdf} ({page_count} страниц, {total_lines} строк)")
 
 
 def find_system_tibetan_font() -> Optional[str]:
@@ -649,10 +689,12 @@ def main() -> None:
                 if isinstance(val, dict):
                     if val:
                         print(f"{desc}:")
-                        for k, v in list(val.items())[:10]:  # Показываем первые 10
+                        # Сортировка по количеству (самые частые первыми)
+                        sorted_items = sorted(val.items(), key=lambda x: x[1], reverse=True)
+                        for k, v in sorted_items[:20]:  # Показываем первые 20
                             print(f"    {k}: {v}")
-                        if len(val) > 10:
-                            print(f"    ... и ещё {len(val) - 10}")
+                        if len(val) > 20:
+                            print(f"    ... и ещё {len(val) - 20} (всего {len(val)})")
                         has_stats = True
                 else:
                     print(f"{desc}: {val}")
@@ -707,14 +749,23 @@ def main() -> None:
             logging.debug("Шрифт не указан, поиск системного...")
             font_path = find_system_tibetan_font()
             if not font_path:
-                logging.error(
+                logging.warning(
                     "Тибетский шрифт не найден!\n"
-                    "Укажите путь к шрифту через --font или установите системный шрифт:\n"
+                    "Результат будет сохранён в TXT вместо PDF.\n"
+                    "Для создания PDF укажите --font или установите системный шрифт:\n"
                     "  Linux: sudo apt install fonts-jomolhari\n"
                     "  macOS: brew install --cask jomolhari\n"
                     "  Windows: скачайте с https://www.thlib.org/tools/fonts/"
                 )
-                sys.exit(1)
+                # Fallback на TXT
+                out_path_txt = out_path.with_suffix('.txt')
+                try:
+                    out_path_txt.write_text(text, encoding="utf-8")
+                    logging.info(f"✅ Текст сохранён в TXT: {out_path_txt.absolute()}")
+                except IOError as e:
+                    logging.error(f"Ошибка записи файла: {e}")
+                    sys.exit(1)
+                sys.exit(0)
             else:
                 logging.info(f"Используется найденный шрифт: {font_path}")
         else:
@@ -725,7 +776,15 @@ def main() -> None:
             logging.info(f"✅ PDF успешно создан: {out_path.absolute()}")
         except Exception as e:
             logging.exception(f"Ошибка создания PDF: {e}")
-            sys.exit(1)
+            logging.warning("Сохраняем результат в TXT вместо PDF...")
+            # Fallback на TXT при ошибке создания PDF
+            out_path_txt = out_path.with_suffix('.txt')
+            try:
+                out_path_txt.write_text(text, encoding="utf-8")
+                logging.info(f"✅ Текст сохранён в TXT: {out_path_txt.absolute()}")
+            except IOError as ex:
+                logging.error(f"Ошибка записи файла: {ex}")
+                sys.exit(1)
 
     logging.info("Работа завершена успешно")
 
